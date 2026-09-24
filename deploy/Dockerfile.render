@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1
+# 1. Build Orbix
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/orbixd ./cmd/orbixd
+
+# 2. Extract official Etcd binary
+FROM gcr.io/etcd-development/etcd:v3.5.16 AS etcd-base
+
+# 3. Final single-container image (Render Portfolio Mode)
+FROM alpine:3.20
+
+# Install minimal dependencies if needed (alpine already has sh)
+RUN apk add --no-cache ca-certificates
+
+# Copy Etcd binary
+COPY --from=etcd-base /usr/local/bin/etcd /usr/local/bin/etcd
+
+# Copy Orbix binary
+COPY --from=build /out/orbixd /usr/local/bin/orbixd
+
+# Copy our startup wrapper script
+COPY deploy/start-render.sh /start-render.sh
+RUN chmod +x /start-render.sh
+
+# Setup non-root user and data dir
+RUN adduser -D -u 1000 orbix \
+ && mkdir -p /data/etcd /data/orbix \
+ && chown -R orbix:orbix /data /start-render.sh
+
+USER orbix
+EXPOSE 8080
+
+ENTRYPOINT ["/start-render.sh"]
