@@ -1,0 +1,12 @@
+# Orbix node configuration. Every field has an ORBIX_* env override.
+node_id: node-1
+http_listen: ":8080"
+etcd_endpoints:
+  - http://localhost:2379
+election_ttl_s: 10     # leader session lease; failover kicks in after this
+worker_lease_s: 5       # claim lease; dead-worker migration after this
+tick_interval_ms: 1000  # scheduler wake-up
+claim_interval_ms: 500  # worker poll
+data_dir: ./data
+catch_up: run_latest   # run_latest | run_all | skip
+max_concurrent: 4      # executions per node

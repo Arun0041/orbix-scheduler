@@ -1,0 +1,72 @@
+# Demo cluster: 1 etcd + 3 orbix nodes. Dashboards on :8081, :8082, :8083.
+#
+#   docker compose up -d --build
+#   ./scripts/seed.sh                    # or scripts/seed.ps1 on Windows
+#   docker compose kill node2            # kill a worker mid-run
+#   docker compose kill node1            # kill the leader, watch re-election
+#   docker compose up -d --force-recreate node1 node2
+#
+# Nodes mount the docker socket so the dashboard can add/kill nodes itself.
+
+x-orbix-node: &orbix-node
+  image: orbix-demo:latest
+  # Demo-only root so orbixd can reach the mounted socket. Never do this in prod.
+  user: "0:0"
+  build: { context: .., dockerfile: deploy/Dockerfile }
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock # dashboard node add/kill controls
+  depends_on:
+    etcd: { condition: service_healthy }
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz | grep -q ok"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 20s
+  restart: unless-stopped
+
+services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.16
+    command:
+      - etcd
+      - --name=orbix-etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+    ports:
+      - "2379:2379" # exposed so the host can also join as a 4th node
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  node1:
+    <<: *orbix-node
+    environment:
+      ORBIX_NODE_ID: node1
+      ORBIX_ETCD: http://etcd:2379
+      ORBIX_LISTEN: ":8080"
+      ORBIX_DATA_DIR: /data
+    ports: ["8081:8080"]
+
+  node2:
+    <<: *orbix-node
+    environment:
+      ORBIX_NODE_ID: node2
+      ORBIX_ETCD: http://etcd:2379
+      ORBIX_LISTEN: ":8080"
+      ORBIX_DATA_DIR: /data
+    ports: ["8082:8080"]
+
+  node3:
+    <<: *orbix-node
+    environment:
+      ORBIX_NODE_ID: node3
+      ORBIX_ETCD: http://etcd:2379
+      ORBIX_LISTEN: ":8080"
+      ORBIX_DATA_DIR: /data
+    ports: ["8083:8080"]

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orbix — cron that survives the crash</title>
+<meta name="description" content="Orbix is a resilient distributed job scheduler: Go leader-worker cluster on etcd with lease-timeout failover.">
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="2" fill="%230E6B4A" transform="rotate(45 8 8)"/></svg>'>
+</head>
+<body>
+<div class="accentbar" aria-hidden="true"></div>
+
+<header class="rail">
+  <a class="wordmark" href="#top"><span class="mark" aria-hidden="true"></span>orbix<em>control plane</em></a>
+  <nav class="nav" aria-label="Sections">
+    <a href="#console">Console</a>
+    <a href="#resilience">Resilience</a>
+    <a href="#chaos">Chaos test</a>
+    <a href="/metrics">Metrics</a>
+  </nav>
+  <div class="spacer"></div>
+  <button id="btn-theme" class="btn sm" type="button" title="Toggle theme">Dark</button>
+  <span class="badge" id="node-badge" title="this node">&#8230;</span>
+  <span class="badge" id="leader-chip" hidden></span>
+  <span class="clock" id="clock">--:--:-- UTC</span>
+</header>
+
+<div class="nodebanner" id="node-banner" hidden role="alert"></div>
+
+<section class="hero" id="top">
+  <p class="eyebrow">TECH26-045 &middot; Go + etcd + SQLite &middot; leader&ndash;worker cluster</p>
+  <h1>Cron that survives<br>the crash.</h1>
+  <p class="lede">One binary on every node. The elected leader decides <em>when</em> jobs fire;
+  every node claims tickets under short etcd leases. Kill a worker mid-run or kill the
+  leader itself &mdash; the fire migrates, the schedule resumes, nothing is lost.</p>
+  <div class="hero-cta">
+    <button class="btn primary" id="btn-hero-new" type="button">Schedule a job</button>
+    <a class="btn" href="#chaos">Run the chaos test</a>
+  </div>
+  <dl class="stats" aria-label="Live cluster telemetry">
+    <div class="stat"><dt>cluster nodes</dt><dd id="s-members">&ndash;</dd></div>
+    <div class="stat"><dt>queued fires</dt><dd id="s-pending">&ndash;</dd></div>
+    <div class="stat"><dt>in flight</dt><dd id="s-flight">&ndash;</dd></div>
+    <div class="stat"><dt>runs recorded</dt><dd id="s-runs">&ndash;</dd></div>
+    <div class="stat"><dt>success rate</dt><dd id="s-ok">&ndash;</dd></div>
+  </dl>
+</section>
+
+<main class="grid" id="console">
+
+  <section class="panel jobs" aria-label="Jobs">
+    <div class="ph">
+      <h2><span class="secnum">01</span>Jobs</h2><span class="count" id="jobs-count"></span>
+      <input type="text" id="jobs-search" class="search-input" placeholder="Filter by name or command&hellip;" aria-label="Filter jobs">
+      <button class="btn primary sm" id="btn-new" type="button">New job</button>
+    </div>
+    <div class="joblist" id="jobs-body"></div>
+  </section>
+
+  <aside class="side">
+    <section class="panel" aria-label="Cluster">
+      <div class="ph"><h2><span class="secnum">02</span>Cluster</h2><span class="count" id="cluster-count"></span>
+      <button class="btn sm" id="btn-add-node" type="button" title="Spawn a new node container">+ Node</button></div>
+      <div id="cluster-body"></div>
+    </section>
+    <section class="panel" aria-label="Queue">
+      <div class="ph"><h2><span class="secnum">03</span>Queue</h2></div>
+      <div id="queue-body"></div>
+    </section>
+    <section class="panel" aria-label="Observe">
+      <div class="ph"><h2><span class="secnum">04</span>Observe</h2></div>
+      <ul class="obslist">
+        <li><a href="/metrics">/metrics</a><span>Prometheus exposition, zero dependencies</span></li>
+        <li><span class="pair"><a href="/healthz">/healthz</a><a href="/readyz">/readyz</a></span><span>liveness and etcd + SQLite readiness</span></li>
+        <li><a href="/api/status">/api/status</a><span>leader, members and queue depth as JSON</span></li>
+        <li><a href="/api/cron/preview?expr=*/5%20*%20*%20*%20*&amp;n=3">/api/cron/preview</a><span>next fire times for any expression</span></li>
+      </ul>
+    </section>
+  </aside>
+
+  <section class="panel runs-panel" aria-label="Run history">
+    <div class="ph">
+      <h2><span class="secnum">05</span>Run history</h2><span class="count" id="runs-count"></span>
+      <span id="runs-filter" class="filterchip" hidden></span>
+      <button class="btn sm" id="btn-runs-refresh" type="button">Refresh</button>
+    </div>
+    <div class="rhead" aria-hidden="true">
+      <span>status</span><span>job</span><span>fire</span>
+      <span>try</span><span class="rc-node">node</span>
+      <span class="rc-dur">duration</span><span>when</span>
+    </div>
+    <div id="runs-body"></div>
+  </section>
+
+</main><section class="resil" id="resilience">
+  <div class="ph">
+    <h2><span class="secnum">06</span>Why it survives</h2>
+  </div>
+  <ol class="failures">
+    <li><b>Worker dies mid-run</b><span>Claim rides a 5s lease; the ticket never left the queue. Any peer re-claims within seconds.</span></li>
+    <li><b>Leader dies</b><span>Lease-backed leader key evaporates; followers re-elect atomically within the session TTL.</span></li>
+    <li><b>Double enqueue</b><span>Put-if-not-exists on the ticket key makes redelivery a no-op. At-most-once enqueue.</span></li>
+    <li><b>Missed fires</b><span>Per-job watermark plus catch-up policy replays the gap: latest, all, or skip.</span></li>
+    <li><b>Zombie leader</b><span>A partitioned ex-leader cannot commit anything. Split-brain is impossible by lease fencing.</span></li>
+    <li><b>Slow worker</b><span>Completion re-verifies claim ownership, so a replacement run is never corrupted.</span></li>
+  </ol>
+  <div class="resil-grid" id="chaos">
+    <div>
+      <h3>Chaos test, live</h3>
+      <p>Start the three-node demo, schedule the heartbeat, then kill things and watch the ledger keep moving.</p>
+      <pre class="cmdblock"><code>docker compose -f deploy/docker-compose.yml up -d --build
+curl -X POST localhost:8081/api/jobs -H "content-type: application/json" -d "{\"name\":\"heartbeat\",\"cron\":\"*/5 * * * * *\",\"command\":\"sleep 8 && echo alive\",\"max_retries\":3}
+docker compose kill node2    # worker dies mid-run -&gt; attempt+1 elsewhere
+docker compose kill node1    # leader dies -&gt; re-election, schedule resumes</code></pre>
+      <p class="semantics">Delivery is <b>at-least-once</b>: a run may execute twice only if a worker dies after
+      finishing but before reporting. Enqueue itself is at-most-once. The industry-standard trade-off.</p>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  <span>orbix <b id="foot-ver" class="mono"></b> &middot; TECH26-045</span>
+  <span>resilient distributed cron &middot; etcd leases &middot; per-node SQLite history</span>
+</footer>
+
+<div class="scrim" id="scrim"></div>
+
+<section class="sheet" id="sheet" aria-hidden="true" role="dialog" aria-label="Job editor">
+  <div class="sheet-h">
+    <h3 id="sheet-title">New job</h3>
+    <button class="x" id="btn-sheet-x" type="button" aria-label="Close">&times;</button>
+  </div>
+  <form id="form" class="sheet-b" autocomplete="off" novalidate>
+    <div class="fgrid">
+      <p class="full">
+        <label for="f-name">Name</label>
+        <input id="f-name" required maxlength="80" placeholder="nightly-report">
+      </p>
+      <p>
+        <label for="f-cron">Cron expression</label>
+        <input id="f-cron" class="mono" required maxlength="64" placeholder="*/15 * * * *">
+        <span class="hint">5 fields, or 6 with leading seconds &middot; macros OK</span>
+        <span class="hint firehint" id="f-cron-hint" aria-live="polite"></span>
+      </p>
+      <p>
+        <label for="f-tz">Timezone</label>
+        <input id="f-tz" class="mono" maxlength="64" placeholder="UTC">
+        <span class="hint">IANA name &mdash; empty means UTC</span>
+      </p>
+      <p class="full">
+        <label for="f-command">Command</label>
+        <textarea id="f-command" class="mono" required placeholder="echo hello from orbix"></textarea>
+        <span class="hint">executed via the system shell on whichever worker claims the fire</span>
+      </p>
+      <p>
+        <label for="f-timeout">Timeout (s)</label>
+        <input id="f-timeout" type="number" min="0" max="86400" value="60">
+      </p>
+      <p>
+        <label for="f-retries">Max retries</label>
+        <input id="f-retries" type="number" min="0" max="10" value="2">
+      </p>
+      <p class="full">
+        <label for="f-catchup">Catch-up policy</label>
+        <select id="f-catchup">
+          <option value="run_latest">run latest &mdash; fire only the most recent missed run</option>
+          <option value="run_all">run all &mdash; every missed fire (bounded)</option>
+          <option value="skip">skip &mdash; advance the schedule silently</option>
+        </select>
+      </p>
+      <div class="checks full">
+        <label class="check"><input type="checkbox" id="f-overlap"> no-overlap</label>
+        <label class="check"><input type="checkbox" id="f-enabled" checked> enabled</label>
+      </div>
+    </div>
+    <div class="sheet-f">
+      <button class="btn" id="btn-cancel" type="button">Cancel</button>
+      <button class="btn primary" id="btn-save" type="submit">Save job</button>
+    </div>
+  </form>
+</section>
+
+<aside class="drawer" id="drawer" aria-hidden="true" role="dialog" aria-label="Run detail">
+  <div class="sheet-h">
+    <h3>Run detail</h3>
+    <button class="x" id="btn-drawer-x" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div class="drw-b" id="drawer-body"></div>
+</aside>
+
+<div class="toasts" id="toast" aria-live="polite"></div>
+<script src="/app.js"></script>
+
+</body>
+</html>

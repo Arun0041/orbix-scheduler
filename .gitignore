@@ -1,0 +1,38 @@
+﻿# built binaries
+/orbixd
+/orbix
+/dist/
+
+# Go build caches (local only)
+.gocache/
+.gotmp/
+
+# local node runtime state (SQLite + data dir)
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# test and coverage artifacts
+coverage.out
+coverage.html
+*.test
+
+# local env overrides (may hold secrets)
+/.env
+.env.*
+
+# editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# docker
+.docker/
